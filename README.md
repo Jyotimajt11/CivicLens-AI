@@ -104,12 +104,6 @@ npm run dev
 
 ---
 
-## 📸 Screenshots
-
-_Add screenshots of your app here (Landing Page, Dashboard, Map View)_
-
----
-
 ## 🎯 Use Case
 
 CivicLens AI helps:
