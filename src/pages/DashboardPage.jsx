@@ -1,5 +1,5 @@
 // Dashboard Page — light theme, split layout
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Upload, MapPin, Send, Loader2, X,
@@ -7,6 +7,10 @@ import {
   Map as MapIcon, Home, TrendingUp,
 } from "lucide-react";
 import { APIProvider, Map as GoogleMap, AdvancedMarker, Pin } from "@vis.gl/react-google-maps";
+
+// Firebase imports
+import { collection, addDoc, getDocs, serverTimestamp, query, orderBy } from "firebase/firestore";
+import { db } from "../firebase/config";
 
 /* ── helpers ── */
 function SeverityBadge({ severity }) {
@@ -17,9 +21,9 @@ function SeverityBadge({ severity }) {
 
 function CategoryBadge({ category }) {
   const icons = {
-    pothole:"🕳️", garbage:"🗑️", water_leak:"💧",
-    broken_streetlight:"💡", graffiti:"🎨", flooding:"🌊",
-    road_damage:"🚧", illegal_dumping:"♻️", sewage:"🚽", other:"📌",
+    pothole: "🕳️", garbage: "🗑️", water_leak: "💧",
+    broken_streetlight: "💡", graffiti: "🎨", flooding: "🌊",
+    road_damage: "🚧", illegal_dumping: "♻️", sewage: "🚽", other: "📌",
   };
   const label = category
     ? category.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
@@ -29,37 +33,63 @@ function CategoryBadge({ category }) {
   );
 }
 
-const MOCK_ISSUES = [
-  { id:"1", description:"Large pothole near bus stop damaging vehicles.",  category:"pothole",  severity:"high",   time:"2 hrs ago" },
-  { id:"2", description:"Overflowing garbage bins on Main Street.",         category:"garbage",  severity:"medium", time:"5 hrs ago" },
-  { id:"3", description:"Minor graffiti on boundary wall near park.",       category:"graffiti", severity:"low",    time:"1 day ago" },
-];
-
-const DUMMY_MARKERS = [
-  { id: 1, lat: 26.2183, lng: 78.1828, title: "City Centre", desc: "Main commercial hub" },
-  { id: 2, lat: 26.2038, lng: 78.1560, title: "Lashkar", desc: "Historical trading center" },
-  { id: 3, lat: 26.2280, lng: 78.2230, title: "Morar", desc: "Cantonment area" },
-];
+function getCoordsForArea(areaName) {
+  const map = {
+    "City Centre": { lat: 26.2183, lng: 78.1828 },
+    "Lashkar": { lat: 26.2038, lng: 78.1560 },
+    "Morar": { lat: 26.2280, lng: 78.2230 },
+    "Thatipur": { lat: 26.2200, lng: 78.2000 },
+    "Gola Ka Mandir": { lat: 26.2450, lng: 78.1900 },
+    "Maharajpura": { lat: 26.2650, lng: 78.2050 },
+  };
+  const jitter = () => (Math.random() - 0.5) * 0.02;
+  return map[areaName] || { lat: 26.2183 + jitter(), lng: 78.1828 + jitter() };
+}
 
 export default function DashboardPage() {
   const navigate = useNavigate();
   const fileInputRef = useRef(null);
 
-  const [imageFile,    setImageFile]    = useState(null);
+  const [imageFile, setImageFile] = useState(null);
   const [imagePreview, setImagePreview] = useState(null);
-  const [description,  setDescription]  = useState("");
-  const [area,         setArea]         = useState("");
-  const [customArea,   setCustomArea]   = useState("");
-  const [submitting,   setSubmitting]   = useState(false);
-  const [submitted,    setSubmitted]    = useState(false);
-  const [formError,    setFormError]    = useState("");
-  const [issues,       setIssues]       = useState(MOCK_ISSUES);
+  const [description, setDescription] = useState("");
+  const [area, setArea] = useState("");
+  const [customArea, setCustomArea] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
+  const [formError, setFormError] = useState("");
+  const [issues, setIssues] = useState([]);
+
+  // Load reports from Firestore on mount
+  useEffect(() => {
+    async function fetchReports() {
+      try {
+        const q = query(collection(db, "reports"), orderBy("createdAt", "desc"));
+        const snapshot = await getDocs(q);
+        const fetchedIssues = snapshot.docs.map(doc => {
+          const data = doc.data();
+          const coords = getCoordsForArea(data.area);
+          return {
+            id: doc.id,
+            ...data,
+            lat: data.lat || coords.lat,
+            lng: data.lng || coords.lng,
+            time: data.createdAt ? new Date(data.createdAt.toMillis()).toLocaleString() : "Just now"
+          };
+        });
+        setIssues(fetchedIssues);
+      } catch (error) {
+        console.error("Error fetching reports:", error);
+      }
+    }
+    fetchReports();
+  }, []);
 
   const counts = {
-    total:  issues.length,
-    high:   issues.filter(i => i.severity === "high").length,
+    total: issues.length,
+    high: issues.filter(i => i.severity === "high").length,
     medium: issues.filter(i => i.severity === "medium").length,
-    low:    issues.filter(i => i.severity === "low").length,
+    low: issues.filter(i => i.severity === "low").length,
   };
 
   /* image */
@@ -67,7 +97,7 @@ export default function DashboardPage() {
     const file = e.target.files[0];
     if (!file) return;
     if (!file.type.startsWith("image/")) { setFormError("Please upload a valid image."); return; }
-    if (file.size > 10 * 1024 * 1024)   { setFormError("Image must be under 10 MB.");   return; }
+    if (file.size > 10 * 1024 * 1024) { setFormError("Image must be under 10 MB."); return; }
     setFormError("");
     setImageFile(file);
     setImagePreview(URL.createObjectURL(file));
@@ -80,39 +110,92 @@ export default function DashboardPage() {
 
   /* submit */
   async function handleSubmit(e) {
-    e.preventDefault();
-    setFormError("");
-    if (!description.trim()) { setFormError("Description is required."); return; }
+  e.preventDefault();
+  setFormError("");
 
-    const finalArea = area === "Others" ? customArea.trim() : area;
+  if (!description.trim()) {
+    setFormError("Description is required.");
+    return;
+  }
 
-    console.group("📋 CivicLens — New Report");
-    console.log("📸 Image      :", imageFile);
-    console.log("📝 Description:", description.trim());
-    console.log("📍 Location   :", finalArea || "Not provided");
-    console.log("🕒 Time       :", new Date().toISOString());
-    console.groupEnd();
+  const finalArea = area === "Others" ? customArea.trim() : area;
 
-    setSubmitting(true);
-    await new Promise(r => setTimeout(r, 1500));
+  setSubmitting(true);
 
-    setIssues(prev => [{
-      id: Date.now().toString(),
+  let imageUrl = "";
+
+  try {
+    if (imageFile) {
+      const formData = new FormData();
+      formData.append("file", imageFile);
+      formData.append("upload_preset", "civiclens_upload");
+
+      const res = await fetch(
+        "https://api.cloudinary.com/v1_1/dvjq6b247/image/upload",
+        {
+          method: "POST",
+          body: formData,
+        }
+      );
+
+      const data = await res.json();
+      console.log("Cloudinary response:", data);
+      if (!data.secure_url) {
+        throw new Error("Image upload failed");
+      }
+
+  const coords = getCoordsForArea(finalArea);
+     if (imageFile) {
+  // upload
+  imageUrl = data.secure_url;
+}
+
+// ALWAYS save
+await addDoc(collection(db, "reports"), {
+  description: description.trim(),
+  area: finalArea,
+  severity: "medium",
+  imageUrl: imageUrl,
+  lat: coords.lat,
+  lng: coords.lng,
+  createdAt: serverTimestamp(),
+});
+
+
+}
+
+    console.log({
       description: description.trim(),
-      category: "other",
-      severity: "medium",
-      time: "Just now",
-      imagePreview,
-    }, ...prev]);
+      area: finalArea,
+      imageUrl,
+      createdAt: new Date(),
+    });
 
-    setSubmitting(false);
+    setIssues((prev) => [
+      {
+        id: Date.now().toString(),
+        description: description.trim(),
+        category: "other",
+        severity: "medium",
+        time: "Just now",
+        imagePreview: imageUrl,
+        area: finalArea,
+      },
+      ...prev,
+    ]);
+
     setSubmitted(true);
     setDescription("");
     setArea("");
     setCustomArea("");
     removeImage();
-    setTimeout(() => setSubmitted(false), 4000);
+  } catch (error) {
+    console.error(error);
+    setFormError("Upload failed. Try again.");
+  } finally {
+    setSubmitting(false);
   }
+}
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col">
@@ -137,9 +220,9 @@ export default function DashboardPage() {
           {/* Nav links */}
           <nav className="hidden md:flex items-center gap-1">
             {[
-              { id:"nav-dashboard", icon:LayoutDashboard, label:"Dashboard", active:true },
-              { id:"nav-heatmap",   icon:MapIcon,         label:"Heatmap",   active:false },
-              { id:"nav-analytics", icon:TrendingUp,      label:"Analytics", active:false },
+              { id: "nav-dashboard", icon: LayoutDashboard, label: "Dashboard", active: true },
+              { id: "nav-heatmap", icon: MapIcon, label: "Heatmap", active: false },
+              { id: "nav-analytics", icon: TrendingUp, label: "Analytics", active: false },
             ].map(({ id, icon: Icon, label, active }) => (
               <button
                 key={id}
@@ -168,10 +251,10 @@ export default function DashboardPage() {
       <div className="bg-white border-b border-gray-100">
         <div className="max-w-7xl mx-auto px-4 py-3 flex gap-6 text-sm overflow-x-auto">
           {[
-            { label:"Total",  value:counts.total,  color:"text-gray-900" },
-            { label:"High",   value:counts.high,   color:"text-red-600"  },
-            { label:"Medium", value:counts.medium, color:"text-amber-600"},
-            { label:"Low",    value:counts.low,    color:"text-green-600"},
+            { label: "Total", value: counts.total, color: "text-gray-900" },
+            { label: "High", value: counts.high, color: "text-red-600" },
+            { label: "Medium", value: counts.medium, color: "text-amber-600" },
+            { label: "Low", value: counts.low, color: "text-green-600" },
           ].map(({ label, value, color }) => (
             <div key={label} className="flex items-center gap-1.5 shrink-0">
               <span className={`font-bold text-xl ${color}`}>{value}</span>
@@ -282,7 +365,7 @@ export default function DashboardPage() {
                     <option value="Maharajpura">Maharajpura</option>
                     <option value="Others">Others</option>
                   </select>
-                  
+
                   {area === "Others" && (
                     <input
                       type="text"
@@ -315,8 +398,8 @@ export default function DashboardPage() {
             <div className="space-y-3 max-h-72 overflow-y-auto pr-1">
               {issues.map((issue) => (
                 <div key={issue.id} id={`issue-${issue.id}`} className="card-hover p-3 cursor-pointer">
-                  {issue.imagePreview && (
-                    <img src={issue.imagePreview} alt="issue" className="w-full h-24 object-cover rounded-lg mb-2" />
+                  {(issue.imagePreview || issue.imageUrl) && (
+                    <img src={issue.imagePreview || issue.imageUrl} alt="issue" className="w-full h-24 object-cover rounded-lg mb-2" />
                   )}
                   <div className="flex flex-wrap gap-1.5 mb-1.5">
                     <CategoryBadge category={issue.category} />
@@ -338,9 +421,9 @@ export default function DashboardPage() {
             </h2>
             <div className="flex items-center gap-3 text-xs text-gray-400">
               {[
-                { color:"bg-red-500",   label:"High" },
-                { color:"bg-amber-400", label:"Medium" },
-                { color:"bg-green-500", label:"Low" },
+                { color: "bg-red-500", label: "High" },
+                { color: "bg-amber-400", label: "Medium" },
+                { color: "bg-green-500", label: "Low" },
               ].map(({ color, label }) => (
                 <span key={label} className="flex items-center gap-1.5">
                   <span className={`w-2.5 h-2.5 rounded-full ${color}`} /> {label}
@@ -361,13 +444,19 @@ export default function DashboardPage() {
                 mapId="DEMO_MAP_ID"
                 disableDefaultUI={true}
               >
-                {DUMMY_MARKERS.map((marker) => (
+                {issues
+                  .filter(issue => typeof issue.lat === "number" && typeof issue.lng === "number")
+                 .map((issue) => (
                   <AdvancedMarker
-                    key={marker.id}
-                    position={{ lat: marker.lat, lng: marker.lng }}
-                    title={marker.title}
+                    key={issue.id}
+                    position={{ lat: issue.lat, lng: issue.lng }}
+                    title={issue.description}
                   >
-                    <Pin background={"#ef4444"} borderColor={"#b91c1c"} glyphColor={"#fff"} />
+                    <Pin
+                      background={issue.severity === 'high' ? '#ef4444' : issue.severity === 'medium' ? '#fbbf24' : '#22c55e'}
+                      borderColor={issue.severity === 'high' ? '#b91c1c' : issue.severity === 'medium' ? '#b45309' : '#15803d'}
+                      glyphColor={"#fff"}
+                    />
                   </AdvancedMarker>
                 ))}
               </GoogleMap>
@@ -376,9 +465,9 @@ export default function DashboardPage() {
             {/* Count chips */}
             <div className="absolute bottom-4 left-4 flex gap-2 pointer-events-none">
               {[
-                { count:counts.high,   cls:"bg-red-50 text-red-600 ring-red-200",     label:"High" },
-                { count:counts.medium, cls:"bg-amber-50 text-amber-600 ring-amber-200", label:"Med" },
-                { count:counts.low,    cls:"bg-green-50 text-green-600 ring-green-200", label:"Low" },
+                { count: counts.high, cls: "bg-red-50 text-red-600 ring-red-200", label: "High" },
+                { count: counts.medium, cls: "bg-amber-50 text-amber-600 ring-amber-200", label: "Med" },
+                { count: counts.low, cls: "bg-green-50 text-green-600 ring-green-200", label: "Low" },
               ].map(({ count, cls, label }) => (
                 <div key={label} className={`px-3 py-1.5 rounded-lg ring-1 text-xs font-semibold ${cls} bg-white/90 backdrop-blur`}>
                   {count} {label}
