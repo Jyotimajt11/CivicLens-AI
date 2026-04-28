@@ -130,7 +130,7 @@ This project is open-source and available under the MIT License.
 
 **Jyotima Tomar**
 
-- GitHub: https://github.com/YOUR_USERNAME
+- GitHub: https://github.com/Jyotimajt11
 
 ---
 
