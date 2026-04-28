@@ -32,7 +32,64 @@ function CategoryBadge({ category }) {
     <span className="badge-cat">{icons[category] || "📌"} {label}</span>
   );
 }
+async function classifyIssueWithAI(description) {
+  try {
+    const prompt = `
+You are CivicLens AI. Classify this civic complaint.
 
+Complaint: "${description}"
+
+Return ONLY valid JSON like this:
+{
+  "category": "garbage",
+  "severity": "medium"
+}
+
+Allowed categories:
+pothole, garbage, water_leak, broken_streetlight, flooding, sewage, road_damage, illegal_dumping, graffiti, other
+
+Allowed severity:
+low, medium, high
+`;
+
+
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${import.meta.env.VITE_GEMINI_API_KEY}`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          contents: [
+            {
+              parts: [{ text: prompt }],
+            },
+          ],
+        }),
+      }
+    );
+
+    const data = await res.json();
+
+    const text =
+      data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+
+    const cleanText = text.replace(/```json|```/g, "").trim();
+    const parsed = JSON.parse(cleanText);
+
+    return {
+      category: parsed.category || "other",
+      severity: parsed.severity || "medium",
+    };
+  } catch (error) {
+    console.error("AI classification failed:", error);
+    return {
+      category: "other",
+      severity: "medium",
+    };
+  }
+}
 function getCoordsForArea(areaName) {
   const map = {
     "City Centre": { lat: 26.2183, lng: 78.1828 },
@@ -119,6 +176,9 @@ export default function DashboardPage() {
   }
 
   const finalArea = area === "Others" ? customArea.trim() : area;
+  const aiResult = await classifyIssueWithAI(description);
+  console.log("AI Result:", aiResult);
+
 
   setSubmitting(true);
 
@@ -149,12 +209,15 @@ export default function DashboardPage() {
   // upload
   imageUrl = data.secure_url;
 }
+  const aiResult = await classifyIssueWithAI(description);
+  
 
 // ALWAYS save
 await addDoc(collection(db, "reports"), {
   description: description.trim(),
   area: finalArea,
-  severity: "medium",
+  severity: aiResult.severity,
+  category: aiResult.category,
   imageUrl: imageUrl,
   lat: coords.lat,
   lng: coords.lng,
@@ -175,8 +238,8 @@ await addDoc(collection(db, "reports"), {
       {
         id: Date.now().toString(),
         description: description.trim(),
-        category: "other",
-        severity: "medium",
+        category: aiResult.category,
+        severity: aiResult.severity,
         time: "Just now",
         imagePreview: imageUrl,
         area: finalArea,
@@ -401,11 +464,16 @@ await addDoc(collection(db, "reports"), {
                   {(issue.imagePreview || issue.imageUrl) && (
                     <img src={issue.imagePreview || issue.imageUrl} alt="issue" className="w-full h-24 object-cover rounded-lg mb-2" />
                   )}
-                  <div className="flex flex-wrap gap-1.5 mb-1.5">
-                    <CategoryBadge category={issue.category} />
-                    <SeverityBadge severity={issue.severity} />
-                  </div>
-                  <p className="text-gray-600 text-xs line-clamp-2">{issue.description}</p>
+                <div className="flex flex-wrap gap-1.5 mb-1.5">
+                  <CategoryBadge category={issue.category} />
+                  <SeverityBadge severity={issue.severity} />
+               </div>
+
+               <p className="text-xs text-blue-600 font-semibold mb-1">
+                 📍 {issue.area || "Location not provided"}
+              </p>
+
+              <p className="text-gray-600 text-xs line-clamp-2">{issue.description}</p>
                   <p className="text-gray-300 text-xs mt-1">{issue.time}</p>
                 </div>
               ))}
