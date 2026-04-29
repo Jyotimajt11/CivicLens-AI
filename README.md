@@ -60,7 +60,7 @@ first-app/
 ### 1. Clone the repository
 
 ```
-git clone https://github.com/YOUR_USERNAME/civiclens-ai.git
+git clone https://github.com/Jyotimajt11/civiclens-ai.git
 cd civiclens-ai
 ```
 
