@@ -32,62 +32,94 @@ function CategoryBadge({ category }) {
     <span className="badge-cat">{icons[category] || "📌"} {label}</span>
   );
 }
+
+function classifyIssueByKeywords(description) {
+  const text = description.toLowerCase();
+  const hasAny = (terms) => terms.some((term) => text.includes(term));
+
+  if (hasAny(["dangerous", "accident", "blocked road", "sewage overflow", "fire", "major", "urgent", "broken electric wire"])) {
+    return { category: "other", severity: "high" };
+  }
+
+  if (hasAny(["minor", "small", "cleaning", "request", "suggestion"])) {
+    return { category: "other", severity: "low" };
+  }
+
+  if (hasAny(["garbage pile", "garbage", "trash", "waste"])) {
+    return { category: "garbage", severity: "medium" };
+  }
+
+  if (hasAny(["pothole", "hole"])) {
+    return { category: "pothole", severity: "medium" };
+  }
+
+  if (hasAny(["water leakage", "water leak", "water", "leak"])) {
+    return { category: "water_leak", severity: "medium" };
+  }
+
+  if (hasAny(["streetlight issue", "streetlight", "light"])) {
+    return { category: "broken_streetlight", severity: "medium" };
+  }
+
+  if (hasAny(["sewage", "drain"])) {
+    return { category: "sewage", severity: "high" };
+  }
+
+  return { category: "other", severity: "medium" };
+}
+
 async function classifyIssueWithAI(description) {
   try {
     const prompt = `
-You are CivicLens AI. Classify this civic complaint.
+Classify this civic complaint.
 
 Complaint: "${description}"
 
-Return ONLY valid JSON like this:
-{
-  "category": "garbage",
-  "severity": "medium"
-}
+Return ONLY JSON:
+{"category":"pothole","severity":"high"}
 
-Allowed categories:
-pothole, garbage, water_leak, broken_streetlight, flooding, sewage, road_damage, illegal_dumping, graffiti, other
+Allowed categories: pothole, garbage, water_leak, broken_streetlight, flooding, sewage, road_damage, illegal_dumping, graffiti, other
+Allowed severity: low, medium, high
 
-Allowed severity:
-low, medium, high
+Severity rules:
+- high: dangerous, accident, blocked road, sewage overflow, fire, major, urgent, broken electric wire
+- medium: garbage pile, pothole, water leakage, streetlight issue
+- low: minor, small, cleaning, request, suggestion
 `;
 
-
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${import.meta.env.VITE_GEMINI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${import.meta.env.VITE_GEMINI_API_KEY}`,
       {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          contents: [
-            {
-              parts: [{ text: prompt }],
-            },
-          ],
-        }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
       }
     );
 
-    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(`Gemini API failed: ${res.status}`);
+    }
 
-    const text =
-      data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    const data = await res.json();
+    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+
+    if (!text.trim()) {
+      throw new Error("Gemini returned empty response");
+    }
 
     const cleanText = text.replace(/```json|```/g, "").trim();
-    const parsed = JSON.parse(cleanText);
+    const jsonText = cleanText.match(/\{[\s\S]*\}/)?.[0] || cleanText;
+    const parsed = JSON.parse(jsonText);
+    const fallback = classifyIssueByKeywords(description);
+    const severity = String(parsed.severity || "").toLowerCase();
 
     return {
-      category: parsed.category || "other",
-      severity: parsed.severity || "medium",
+      category: parsed.category || fallback.category,
+      severity: ["high", "medium", "low"].includes(severity) ? severity : fallback.severity,
     };
   } catch (error) {
     console.error("AI classification failed:", error);
-    return {
-      category: "other",
-      severity: "medium",
-    };
+    return classifyIssueByKeywords(description);
   }
 }
 function getCoordsForArea(areaName) {
@@ -116,6 +148,7 @@ export default function DashboardPage() {
   const [submitted, setSubmitted] = useState(false);
   const [formError, setFormError] = useState("");
   const [issues, setIssues] = useState([]);
+  const [filter, setFilter] = useState("all");
 
   // Load reports from Firestore on mount
   useEffect(() => {
@@ -149,6 +182,10 @@ export default function DashboardPage() {
     low: issues.filter(i => i.severity === "low").length,
   };
 
+  const filteredIssues = filter === "all"
+    ? issues
+    : issues.filter((issue) => issue.severity === filter);
+
   /* image */
   function handleImageChange(e) {
     const file = e.target.files[0];
@@ -177,8 +214,11 @@ export default function DashboardPage() {
 
   const finalArea = area === "Others" ? customArea.trim() : area;
   const aiResult = await classifyIssueWithAI(description);
-  console.log("AI Result:", aiResult);
-
+  
+  if (!finalArea) {
+    setFormError("Please select or enter an area.");
+    return;
+  }
 
   setSubmitting(true);
 
@@ -199,39 +239,26 @@ export default function DashboardPage() {
       );
 
       const data = await res.json();
-      console.log("Cloudinary response:", data);
+
       if (!data.secure_url) {
         throw new Error("Image upload failed");
       }
 
-  const coords = getCoordsForArea(finalArea);
-     if (imageFile) {
-  // upload
-  imageUrl = data.secure_url;
-}
-  const aiResult = await classifyIssueWithAI(description);
-  
+      imageUrl = data.secure_url;
+    }
 
-// ALWAYS save
-await addDoc(collection(db, "reports"), {
-  description: description.trim(),
-  area: finalArea,
-  severity: aiResult.severity,
-  category: aiResult.category,
-  imageUrl: imageUrl,
-  lat: coords.lat,
-  lng: coords.lng,
-  createdAt: serverTimestamp(),
-});
+    const coords = getCoordsForArea(finalArea);
+    
 
-
-}
-
-    console.log({
+    await addDoc(collection(db, "reports"), {
       description: description.trim(),
       area: finalArea,
+      severity: aiResult.severity,
+      category: aiResult.category,
       imageUrl,
-      createdAt: new Date(),
+      lat: coords.lat,
+      lng: coords.lng,
+      createdAt: serverTimestamp(),
     });
 
     setIssues((prev) => [
@@ -241,8 +268,10 @@ await addDoc(collection(db, "reports"), {
         category: aiResult.category,
         severity: aiResult.severity,
         time: "Just now",
-        imagePreview: imageUrl,
+        imageUrl,
         area: finalArea,
+        lat: coords.lat,
+        lng: coords.lng,
       },
       ...prev,
     ]);
@@ -253,13 +282,12 @@ await addDoc(collection(db, "reports"), {
     setCustomArea("");
     removeImage();
   } catch (error) {
-    console.error(error);
-    setFormError("Upload failed. Try again.");
+    console.error("Submit failed:", error);
+    setFormError("Submit failed. Check console for details.");
   } finally {
     setSubmitting(false);
   }
-}
-
+} 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col">
 
@@ -457,9 +485,24 @@ await addDoc(collection(db, "reports"), {
 
           {/* Recent reports */}
           <div className="card p-5 animate-fade-up delay-100">
-            <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-4">Recent Reports</h3>
+            <div className="flex items-center justify-between gap-3 mb-4">
+              <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wide">Recent Reports</h3>
+              <div className="flex items-center gap-1 bg-gray-50 border border-gray-100 rounded-lg p-1">
+                {["all", "high", "medium", "low"].map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => setFilter(value)}
+                    className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-colors capitalize
+                      ${filter === value ? "bg-white text-blue-600 shadow-sm" : "text-gray-400 hover:text-gray-700"}`}
+                  >
+                    {value}
+                  </button>
+                ))}
+              </div>
+            </div>
             <div className="space-y-3 max-h-72 overflow-y-auto pr-1">
-              {issues.map((issue) => (
+              {filteredIssues.map((issue) => (
                 <div key={issue.id} id={`issue-${issue.id}`} className="card-hover p-3 cursor-pointer">
                   {(issue.imagePreview || issue.imageUrl) && (
                     <img src={issue.imagePreview || issue.imageUrl} alt="issue" className="w-full h-24 object-cover rounded-lg mb-2" />
