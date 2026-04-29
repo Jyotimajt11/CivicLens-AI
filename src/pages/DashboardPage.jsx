@@ -6,7 +6,7 @@ import {
   CheckCircle2, AlertTriangle, LayoutDashboard,
   Map as MapIcon, Home, TrendingUp,
 } from "lucide-react";
-import { APIProvider, Map as GoogleMap, AdvancedMarker, Pin } from "@vis.gl/react-google-maps";
+import { APIProvider, Map as GoogleMap, AdvancedMarker, InfoWindow } from "@vis.gl/react-google-maps";
 
 // Firebase imports
 import { collection, addDoc, getDocs, serverTimestamp, query, orderBy } from "firebase/firestore";
@@ -31,6 +31,18 @@ function CategoryBadge({ category }) {
   return (
     <span className="badge-cat">{icons[category] || "📌"} {label}</span>
   );
+}
+
+function formatLabel(value) {
+  return value
+    ? value.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
+    : "Other";
+}
+
+function getMarkerIcon(severity) {
+  if (severity === "high") return "http://maps.google.com/mapfiles/ms/icons/red-dot.png";
+  if (severity === "low") return "http://maps.google.com/mapfiles/ms/icons/green-dot.png";
+  return "http://maps.google.com/mapfiles/ms/icons/yellow-dot.png";
 }
 
 function classifyIssueByKeywords(description) {
@@ -149,6 +161,7 @@ export default function DashboardPage() {
   const [formError, setFormError] = useState("");
   const [issues, setIssues] = useState([]);
   const [filter, setFilter] = useState("all");
+  const [selectedIssue, setSelectedIssue] = useState(null);
 
   // Load reports from Firestore on mount
   useEffect(() => {
@@ -562,14 +575,31 @@ export default function DashboardPage() {
                     key={issue.id}
                     position={{ lat: issue.lat, lng: issue.lng }}
                     title={issue.description}
+                    onClick={() => setSelectedIssue(issue)}
                   >
-                    <Pin
-                      background={issue.severity === 'high' ? '#ef4444' : issue.severity === 'medium' ? '#fbbf24' : '#22c55e'}
-                      borderColor={issue.severity === 'high' ? '#b91c1c' : issue.severity === 'medium' ? '#b45309' : '#15803d'}
-                      glyphColor={"#fff"}
+                    <img
+                      src={getMarkerIcon(issue.severity)}
+                      alt={`${issue.severity || "medium"} severity marker`}
+                      className="w-8 h-8"
                     />
                   </AdvancedMarker>
                 ))}
+
+                {selectedIssue && (
+                  <InfoWindow
+                    position={{ lat: selectedIssue.lat, lng: selectedIssue.lng }}
+                    onCloseClick={() => setSelectedIssue(null)}
+                  >
+                    <div className="min-w-48 max-w-64 text-sm text-gray-700">
+                      <p className="font-bold text-gray-900 mb-2">{formatLabel(selectedIssue.category)}</p>
+                      <p className="mb-2">{selectedIssue.description}</p>
+                      <div className="space-y-1 text-xs">
+                        <p><span className="font-semibold text-gray-500">Severity:</span> {formatLabel(selectedIssue.severity)}</p>
+                        <p><span className="font-semibold text-gray-500">Area:</span> {selectedIssue.area || "Location not provided"}</p>
+                      </div>
+                    </div>
+                  </InfoWindow>
+                )}
               </GoogleMap>
             </APIProvider>
 
