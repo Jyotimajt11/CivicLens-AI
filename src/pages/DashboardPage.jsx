@@ -45,6 +45,18 @@ function getMarkerIcon(severity) {
   return "http://maps.google.com/mapfiles/ms/icons/yellow-dot.png";
 }
 
+function getMostFrequent(items, key) {
+  const counts = items.reduce((acc, item) => {
+    const value = item[key];
+    if (!value) return acc;
+    acc[value] = (acc[value] || 0) + 1;
+    return acc;
+  }, {});
+
+  const topEntry = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+  return topEntry ? topEntry[0] : "";
+}
+
 function classifyIssueByKeywords(description) {
   const text = description.toLowerCase();
   const hasAny = (terms) => terms.some((term) => text.includes(term));
@@ -147,6 +159,29 @@ function getCoordsForArea(areaName) {
   return map[areaName] || { lat: 26.2183 + jitter(), lng: 78.1828 + jitter() };
 }
 
+async function getCoordsForLocation(exactLocation, areaName) {
+  if (!exactLocation.trim()) {
+    return getCoordsForArea(areaName);
+  }
+
+  try {
+    const searchString = `${exactLocation.trim()}, ${areaName}, Gwalior, Madhya Pradesh, India`;
+    const res = await fetch(
+      `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(searchString)}&key=${import.meta.env.VITE_GOOGLE_MAPS_API_KEY}`
+    );
+    const data = await res.json();
+    const location = data?.results?.[0]?.geometry?.location;
+
+    if (typeof location?.lat === "number" && typeof location?.lng === "number") {
+      return { lat: location.lat, lng: location.lng };
+    }
+  } catch (error) {
+    console.warn("Location geocoding failed, using area coordinates:", error);
+  }
+
+  return getCoordsForArea(areaName);
+}
+
 export default function DashboardPage() {
   const navigate = useNavigate();
   const fileInputRef = useRef(null);
@@ -156,6 +191,7 @@ export default function DashboardPage() {
   const [description, setDescription] = useState("");
   const [area, setArea] = useState("");
   const [customArea, setCustomArea] = useState("");
+  const [exactLocation, setExactLocation] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [formError, setFormError] = useState("");
@@ -198,6 +234,13 @@ export default function DashboardPage() {
   const filteredIssues = filter === "all"
     ? issues
     : issues.filter((issue) => issue.severity === filter);
+
+  const analytics = {
+    totalReports: issues.length,
+    highPriorityCount: issues.filter((issue) => issue.severity === "high").length,
+    mostCommonCategory: getMostFrequent(issues, "category"),
+    mostAffectedArea: getMostFrequent(issues, "area"),
+  };
 
   /* image */
   function handleImageChange(e) {
@@ -260,12 +303,14 @@ export default function DashboardPage() {
       imageUrl = data.secure_url;
     }
 
-    const coords = getCoordsForArea(finalArea);
+    const finalLocation = exactLocation.trim();
+    const coords = await getCoordsForLocation(finalLocation, finalArea);
     
 
     await addDoc(collection(db, "reports"), {
       description: description.trim(),
       area: finalArea,
+      location: finalLocation,
       severity: aiResult.severity,
       category: aiResult.category,
       imageUrl,
@@ -283,6 +328,7 @@ export default function DashboardPage() {
         time: "Just now",
         imageUrl,
         area: finalArea,
+        location: finalLocation,
         lat: coords.lat,
         lng: coords.lng,
       },
@@ -293,6 +339,7 @@ export default function DashboardPage() {
     setDescription("");
     setArea("");
     setCustomArea("");
+    setExactLocation("");
     removeImage();
   } catch (error) {
     console.error("Submit failed:", error);
@@ -479,6 +526,14 @@ export default function DashboardPage() {
                       className="input py-2.5"
                     />
                   )}
+
+                  <input
+                    type="text"
+                    value={exactLocation}
+                    onChange={(e) => setExactLocation(e.target.value)}
+                    placeholder="Exact location, landmark, road, ward..."
+                    className="input py-2.5"
+                  />
                 </div>
               </div>
 
@@ -494,6 +549,24 @@ export default function DashboardPage() {
                   : <><Send size={17} /> Submit Report</>}
               </button>
             </form>
+          </div>
+
+          {/* Analytics */}
+          <div className="card p-5 animate-fade-up delay-100">
+            <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-4">Analytics</h3>
+            <div className="grid grid-cols-2 gap-3">
+              {[
+                { label: "Total Reports", value: analytics.totalReports },
+                { label: "High Priority Reports", value: analytics.highPriorityCount },
+                { label: "Most Common Issue Category", value: analytics.mostCommonCategory ? formatLabel(analytics.mostCommonCategory) : "No data yet" },
+                { label: "Most Affected Area", value: analytics.mostAffectedArea || "No data yet" },
+              ].map(({ label, value }) => (
+                <div key={label} className="rounded-lg border border-gray-100 bg-gray-50 p-3">
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">{label}</p>
+                  <p className="mt-1 text-sm font-bold text-gray-900">{value}</p>
+                </div>
+              ))}
+            </div>
           </div>
 
           {/* Recent reports */}
@@ -526,8 +599,16 @@ export default function DashboardPage() {
                </div>
 
                <p className="text-xs text-blue-600 font-semibold mb-1">
-                 📍 {issue.area || "Location not provided"}
+                 📍 Area: {issue.area || "Location not provided"}
               </p>
+              <p className="text-xs text-gray-500 mb-1">
+                Exact Location: {issue.location || "No exact location added"}
+              </p>
+              {typeof issue.lat === "number" && typeof issue.lng === "number" && (
+                <p className="text-xs text-gray-400 mb-1">
+                  Lat: {issue.lat.toFixed(4)}, Lng: {issue.lng.toFixed(4)}
+                </p>
+              )}
 
               <p className="text-gray-600 text-xs line-clamp-2">{issue.description}</p>
                   <p className="text-gray-300 text-xs mt-1">{issue.time}</p>
@@ -596,6 +677,7 @@ export default function DashboardPage() {
                       <div className="space-y-1 text-xs">
                         <p><span className="font-semibold text-gray-500">Severity:</span> {formatLabel(selectedIssue.severity)}</p>
                         <p><span className="font-semibold text-gray-500">Area:</span> {selectedIssue.area || "Location not provided"}</p>
+                        <p><span className="font-semibold text-gray-500">Location:</span> {selectedIssue.location || "No exact location added"}</p>
                       </div>
                     </div>
                   </InfoWindow>
